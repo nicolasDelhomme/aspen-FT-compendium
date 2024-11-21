@@ -1,0 +1,394 @@
+---
+title: "Aspen Differential Expression - year around - Effect of location in Dec, Jan, Feb vs CTW8/10 in young trees"
+author: "Original code by Torgeir R. Hvidsten  
+  Modifications by Laura García Romañach"
+date: '`r format(Sys.time(), "%d.%m.%Y")`'
+output:
+  html_document:
+    toc: false
+    toc_float: true
+    theme: yeti
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(stringsAsFactors = FALSE)
+
+library(knitr)
+library(tidyverse)
+library(ggrepel)
+
+library(WGCNA)
+library(DESeq2)
+library(gplots)
+library(pheatmap)
+library(cowplot)
+
+library(DT)
+library(rio)
+
+library(GOstats)
+library(GSEABase)
+
+
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+ext.location.summer <- "In_Out_DecFeb_CTW8_10_young"
+ext <- "1_3_2_year_around"
+compute = FALSE
+```
+
+### Load data
+
+Load data. 
+
+```{r load, message=FALSE, warning=FALSE}
+
+# Load count data
+load("data/gene-counts-and-VSTexpression.RData")
+
+# Filter samples to be compared
+samples.sep <- samples.sep %>% 
+  filter(S1 == "DEC" | 
+           S1 == "JAN" |  
+           S1 == "FEB" |
+           S2 == "CTW8" |
+           S2 == "CTW10"|
+           S1 == "CTW10") %>% 
+  filter(!grepl("A", S2)) %>% 
+  mutate(Season = "Winter") 
+
+data <- data[, colnames(data) %in% samples.sep$Samples]
+counts <- counts[, colnames(counts) %in% samples.sep$Samples]
+
+cat("Genes x Samples: ", paste0(dim(counts), collapse = " x "))
+```
+
+### Expressed genes
+
+```{r plots, fig.height=4, message=FALSE, warning=FALSE}
+
+data.long <- data %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Genes") %>%
+  gather(Samples, Expression, -1) %>%
+  right_join(samples.sep %>% dplyr::select(-Expression), by = "Samples") %>% 
+  mutate(Treatment = if_else(S1 == "T89" & S2 == "CTW10", "CTW10",
+                       if_else(S1 == "CTW10", "CTW10",    
+              if_else(S1 == "T89" & S2 == "CTW8", "CTW8",
+                      if_else(S1 == "JAN", "JAN",
+                              if_else(S1 == "FEB", "FEB", 
+                                      if_else(S1 == "DEC", "DEC", "0")))))))
+
+data.long %>%
+  group_by(Genes, Location) %>%
+  summarise(Expression = median(Expression)) %>%
+  filter(Expression > 1) %>% 
+  group_by(Location) %>%
+  summarise(n = n()) %>%
+  ggplot(aes(x = Location, y = n)) +
+  geom_col(aes(fill = Location)) +
+  geom_text(aes(label = n), vjust = -0.5) +
+  theme_classic() +
+  ylab("Number of expressed genes (median > 1)")
+
+data.long %>%
+  group_by(Genes, Location) %>%
+  summarise(Expression = median(Expression)) %>%
+  ggplot(aes(x = Location, y = Expression)) +
+  geom_boxplot(aes(fill = Location)) +
+  theme_classic() +
+  ylab("Expression")
+
+data.long %>% 
+  group_by(Genes, Treatment) %>%
+  summarise(Expression = median(Expression)) %>%
+  filter(Expression > 1) %>% 
+  group_by(Treatment) %>%
+  summarise(n = n()) %>%
+  ggplot(aes(x = Treatment, y = n)) +
+  geom_col(aes(fill = Treatment)) +
+  geom_text(aes(label = n), vjust = -0.5) +
+  theme_classic() +
+  ylab("Number of expressed genes (median > 1)")
+
+data.long %>%  
+  group_by(Genes, Treatment) %>%
+  summarise(Expression = median(Expression)) %>%
+  ggplot(aes(x = Treatment, y = Expression)) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme_classic() +
+  ylab("Expression")
+
+```
+
+### Differential expression between Location
+
+Note: "A vs B" means "log2FoldChange(A/B): positive value means higher expression in A and negative value means higher in B. 
+
+```{r degs, fig.height=6, warning=FALSE, message=FALSE}
+
+samples.sep$Location <- factor(samples.sep$Location, 
+         levels = c("Outdoor", "Indoor"))
+
+if (compute) {
+  
+  dds <- DESeqDataSetFromMatrix(countData = counts,
+                            colData = DataFrame(condition = samples.sep$Location),
+                            formula(~ condition))
+  
+  dds <- DESeq(dds)
+      
+  cat(resultsNames(dds)[2], "\n")
+      
+  DEresults <- results(dds) %>%
+    as.data.frame %>%
+    rownames_to_column(var = "Genes") %>%
+    drop_na(pvalue) %>%
+    mutate(padj = p.adjust(pvalue, method = "BH")) %>% 
+    filter(padj < 0.05) %>% 
+    arrange(pvalue) %>%
+    mutate(Contrasts = c(paste0(levels(samples.sep$Location)[2:1], collapse = " vs "))) %>%
+    relocate(Contrasts)
+  
+  save(DEresults, file = paste0("RData/deg_", ext.location.summer, ".RData"))
+} else {
+  load(paste0("RData/deg_", ext.location.summer, ".RData"))
+}
+
+# Filter for fold-change
+DEresults <- DEresults %>%
+  filter(abs(log2FoldChange) >= 1)
+
+# Filter for specificity
+keep <- data %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Genes") %>%
+  gather(Samples, Expression, -1) %>%
+  left_join(samples.sep %>% dplyr::select(Samples), by = "Samples") %>%
+  group_by(Genes) %>%
+  summarise(Expression = median(Expression)) %>%
+  mutate(Expression = Expression > 1) %>%
+  group_by(Genes) %>%
+  summarise(Expression = sum(Expression)) %>%
+  filter(Expression == 1) %>%
+  pull(Genes)
+    
+DEresults <- DEresults %>%
+  filter(Genes %in% keep)
+
+save(DEresults, file = paste0("RData/deg_", ext.location.summer, "_specific", ".RData"))
+
+# Plot some example genes
+plots <- list()
+for (sign in c("+", "-")) {
+
+  if (sign == "+") {
+    gene <- DEresults %>% filter(log2FoldChange > 0) %>%  dplyr::slice(1) %>% pull(Genes)
+  } else {
+    gene <- DEresults %>% filter(log2FoldChange < 0) %>%  dplyr::slice(1) %>% pull(Genes)
+  }
+  
+  plots[[length(plots)+1]] <- data %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "Genes") %>%
+    filter(Genes == gene) %>%
+    gather (Samples, Expression, -1) %>%
+    left_join(samples.sep %>% dplyr::select(Samples, Location), by = "Samples") %>%
+    ggplot(aes(x = Location, y = Expression, fill = Location)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(color="black", size=0.8, alpha=0.5) +
+    theme_classic() +
+    ggtitle(gene)
+  
+  plots[[length(plots)+1]] <- counts %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "Genes") %>%
+    filter(Genes == gene) %>%
+    gather (Samples, Expression, -1) %>%
+    left_join(samples.sep %>% dplyr::select(Samples, Location), by = "Samples") %>%
+    ggplot(aes(x = Location, y = Expression, fill = Location)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(color="black", size=0.8, alpha=0.5) +
+    theme_classic() +
+    ylab("Raw counts")
+}
+plot_grid(plotlist = plots, ncol = 2)
+
+# Table of DEGs
+load(paste0("RData/genetable_", ext, ".RData"))
+
+DEresults$Contrasts <- factor(DEresults$Contrasts, levels = unique(DEresults$Contrasts))
+
+table <- DEresults%>%
+  left_join(subannot, by = c("Genes" = "Gene name")) %>%
+  dplyr::select(-baseMean, -lfcSE, -stat, -pvalue, -GO) %>%
+  dplyr::rename(Padj = padj) %>%
+  mutate(log2FoldChange = round(log2FoldChange, digits = 3)) %>%
+  mutate(Padj = format(Padj, digits = 3, scientific = TRUE))
+
+datatable(table, rownames = FALSE, filter = "top",
+          options = list(
+            columnDefs = list(list(className = 'dt-center', targets = "_all"))
+            )
+          )
+
+```
+
+## DEGs - GO enrichment
+
+```{r GO_enrichment, warning=FALSE}
+
+# Gene Ontology
+if (compute) {
+  annot <- read.delim2("doc/annotations/Potra22_blast2go_GO.txt", check.names = FALSE) %>%
+    separate(`Sequence Name`,into = c("Sequence Name","Sequence Variant"), sep = "\\.") %>%
+    separate(`Annotation GO ID-Annotation GO Term`,into = c("GO ID","GO Term"), sep = "-", extra = "drop") %>%
+    filter(`Sequence Name` %in% rownames(data))
+    
+  goframeData <- data.frame(go_id=annot$`GO ID`, evidence=rep("ND", nrow(annot)), 
+                          gene_id=annot$`Sequence Name`)
+
+  goFrame=GOFrame(goframeData,organism="Aspen")
+  
+  goAllFrame=GOAllFrame(goFrame)
+  gsc <- GeneSetCollection(goAllFrame, setType = GOCollection())
+  
+  GO_DEGs <- list()
+  GO_DEGs_genes <- list()
+  for (contrast in unique(DEresults$Contrasts)) {
+    
+    for (sign in c("+", "-")) {
+      
+      degs <- DEresults%>%
+        filter(Contrasts == contrast) %>%
+        filter(Genes %in% goframeData$gene_id)
+      
+      if (sign == "+") {
+        degs <- degs %>% filter(log2FoldChange > 0) %>% pull(Genes)
+      } else {
+        degs <- degs %>% filter(log2FoldChange < 0) %>% pull(Genes)
+      }
+      
+      name <- paste0(contrast, sign)
+      
+      if (length(degs) > 0) {
+        params <- GSEAGOHyperGParams(name="My Custom GSEA based annot Params",
+                                 geneSetCollection=gsc,
+                                 geneIds = degs,
+                                 universeGeneIds = goframeData$gene_id,
+                                 ontology = "BP",
+                                 pvalueCutoff = 0.05,
+                                 conditional = FALSE,
+                                 testDirection = "over")
+  
+        Over <- hyperGTest(params)
+        t <- summary(Over)
+        t <- t[t$Count>1,]
+        t <- t[,c(1,2,5,6,7)]
+        colnames(t) <- c("GO id","P-value","x","n","GO term")
+        if (nrow(t) > 0) {
+          rownames(t) <- 1:nrow(t)
+        
+          t$`P-value`<- format(t$`P-value`, digits=3, scientific=TRUE)
+          
+          for (i in 1:nrow(t)) {
+            go_id <- t$`GO id`[i] 
+            annot_g <- Over@goDag@nodeData@data[[go_id]]$geneIds
+            genes <- degs[degs %in% annot_g]
+            for (j in 1:length(genes)) {
+              id <- paste0(contrast, "_", genes[j])
+              GO_DEGs_genes[[id]] <-  c(GO_DEGs_genes[[id]], t$`GO term`[i])
+            }
+          }
+        }
+        
+        GO_DEGs[[name]] <- t
+        print(name)
+      } else {
+        t <- data.frame('GO id' = c(""), 'P-value' = c(""), 
+                        x = c(""), n = c(""), 'GO term' = c(""))
+        GO_DEGs[[name]] <- t
+      }
+    }
+  }
+  
+  save(GO_DEGs, GO_DEGs_genes, file = paste0("RData/GO_DEGs_", ext.location.summer, "_specific.RData")) # OBS!
+} else {
+  load(paste0("RData/GO_DEGs_", ext.location.summer, "_specific.RData"))
+}
+
+out = NULL
+for (contrast in unique(DEresults$Contrasts)) {
+  for (sign in c("+", "-")) {
+    
+    title <- paste0(contrast, sign)
+  
+    knit_expanded <- paste0("\n\n", title, "\n\n```{r results='asis', echo=FALSE}\n\n\n\ndatatable(GO_DEGs[['", title, "']],rownames = FALSE, filter = 'top', options = list(columnDefs = list(list(className = 'dt-center', targets = '_all'))))\n\n```")
+  
+    out = c(out, knit_expanded)
+  }
+}
+
+```
+
+`r paste(knit(text = out), collapse = '\n')`
+
+### DEGs with significant GO terms
+
+```{r degs2, warning=FALSE, message=FALSE}
+
+for (i in 1:nrow(table)) {
+  
+  go <- GO_DEGs_genes[[paste0(table[i, "Contrasts"], "_", table[i,"Genes"])]]
+  go <- paste(sort(unique(go)), collapse = "; ")
+  
+  table[i, "GO"] <- go
+  
+}
+
+table2 <- table %>% filter(GO != "")
+
+datatable(table2, rownames = FALSE, filter = "top",
+          options = list(
+            columnDefs = list(list(className = 'dt-center', targets = "_all"))
+            )
+          )
+
+export(GO_DEGs, file = paste0("excel/GO_DEGs_", ext.location.summer, ".xlsx"))
+export(table2, file = paste0("excel/GO_DEGs_genes_", ext.location.summer, ".xlsx"))
+```
+
+### DEGs with no significant GO terms
+
+GO term annotations are listed, if any.
+
+```{r degs3, warning=FALSE, message=FALSE}
+
+table2 <- table %>% filter(GO == "")
+
+table2$GO <- NULL
+
+annot <- read.delim2("annotations/Potra22_blast2go_GO.txt", check.names = FALSE) %>%
+  separate(`Sequence Name`,into = c("Sequence Name","Sequence Variant"), sep = "\\.") %>%
+  separate(`Annotation GO ID-Annotation GO Term`,into = c("GO ID","GO Term"), sep = "-", extra = "drop") %>%
+  dplyr::rename(Genes = "Sequence Name", GO = "GO Term") %>%
+  dplyr::select(Genes, GO) %>%
+  group_by(Genes) %>%
+  summarise(GO = paste(GO, collapse = "; "))
+
+table2 <- left_join(table2, annot, by = "Genes")
+  
+datatable(table2, rownames = FALSE, filter = "top",
+          options = list(
+            columnDefs = list(list(className = 'dt-center', targets = "_all"))
+            )
+          )
+
+```
