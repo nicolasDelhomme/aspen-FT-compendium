@@ -19,6 +19,7 @@ options(stringsAsFactors = FALSE)
 
 library(knitr)
 library(tidyverse)
+options(dplyr.summarise.inform = FALSE)
 library(ggrepel)
 
 library(WGCNA)
@@ -26,6 +27,7 @@ library(DESeq2)
 library(gplots)
 library(pheatmap)
 library(cowplot)
+library(RColorBrewer)
 
 library(DT)
 library(rio)
@@ -122,27 +124,24 @@ Hierarchical clustering
 
 # Hierarchical clustering
 hier.clust <- function (data.loc, samples.sep.loc, rnames = FALSE) {
+  
+  data.loc.ward <- t(na.omit(t(data.loc)))
 
-  dist.var <- dist(t(data.loc), method="euclidean")
+  dist.var <- dist(t(data.loc.ward), method="euclidean")
   dist.var.tree <- hclust(dist.var, method = "ward.D")
   
-  dist.obs <- as.dist(1-cor(t(data.loc)))
+  dist.obs <- as.dist(1-cor(t(data.loc.ward)))
   dist.obs.tree <- hclust(dist.obs, method = "ward.D")
   
-  samples.sep.loc$S2 <- factor(ifelse(samples.sep.loc$S2 %in% c("Y", "A1", "A2"), 
-                            samples.sep.loc$S2, NA), levels = c("Y", "A1", "A2"))
-  
-  samples.sep.loc$Week[samples.sep.loc$Week == "Unknown"] <- NA
-  
-  annot_col <- data.frame(S2        = samples.sep.loc$S2,
-                          Tissues   = samples.sep.loc$Tissue,
-                          Treatment = samples.sep.loc$Treatment,
-                          Week      = samples.sep.loc$Week,
-                          Month     = samples.sep.loc$Month,
-                          Experiment   = samples.sep.loc$Experiment,
+  annot_col <- data.frame(
+    Age = samples.sep.loc$Age,
+                          Tissue   = samples.sep.loc$Tissue,
+                          `Month/Treatment` = samples.sep.loc$`Month/Treatment`,
                           Location = samples.sep.loc$Location,
-                          check.names = FALSE)
-  rownames(annot_col) <- colnames(data.loc)
+                          check.names = FALSE) %>% 
+    unique()
+  
+  rownames(annot_col) <- colnames(df_wide)
   
   # Remove annotations with only one value
   idx_delete <- c()
@@ -152,33 +151,44 @@ hier.clust <- function (data.loc, samples.sep.loc, rnames = FALSE) {
     }
   }
   annot_col[, idx_delete] <- NULL
-  
-  vals <- unique(samples.sep.loc$Experiment)
-  experiment_map <- gg_color_hue(length(vals))
-  names(experiment_map) <- vals
-
   vals <- unique(samples.sep.loc$Location)
   location_map <- gg_color_hue(length(vals))
   names(location_map) <- vals
-  
-  vals <- levels(samples.sep.loc$Month)
-  month_map <- gg_color_hue(length(vals))
-  names(month_map) <- vals
-  
-  vals <- levels(samples.sep.loc$S2)
-  s2_map <- gg_color_hue(length(vals))
-  names(s2_map) <- vals
-  
-  annot_colors = list(
-    S2        = s2_map,
-    Tissues   = c(Bud = "chocolate", Leaf = "darkgreen"), # Shoot = "darkmagenta"
-    Treatment = c(CT = "cyan", LD = "darkorange", SD = "dodgerblue3"),
-    Week      = colorRampPalette(c("white","mediumvioletred"))(15),
-    Month     = month_map,
-    Experiment = experiment_map,
-    Location = location_map
-  )
 
+  month_palette <- rev(colorRampPalette(brewer.pal(n = 9, name = "YlGnBu"))(11))
+  treatment_palette <- rev(colorRampPalette(brewer.pal(n = 9, name = "YlGnBu"))(12))
+
+  annot_colors = list(
+  Age = c(Juvenile = "mediumpurple1", Adult = "purple4"),
+  Location = location_map,
+  Tissue   = c(Bud = "chocolate", Leaf = "darkgreen"),
+  `Month/Treatment` = c(
+    SEP = month_palette[1],
+    OCT = month_palette[2],
+    DEC = month_palette[3],
+    JAN = month_palette[4],
+    FEB = month_palette[5],
+    MAR = month_palette[6],
+    APR = month_palette[7],
+    MAY = month_palette[8],
+    JUN = month_palette[9],
+    JUL = month_palette[10],
+    AUG = month_palette[11],
+    SD15 = treatment_palette[1],
+    CT2 = treatment_palette[2],
+    CT8 = treatment_palette[3],
+    CT10 = treatment_palette[4],
+    BB1 = treatment_palette[5],
+    BB2 = treatment_palette[6],
+    BB3 = treatment_palette[7],
+    LD = treatment_palette[8],
+    SD1 = treatment_palette[9],
+    SD2 = treatment_palette[10],
+    SD3 = treatment_palette[11],
+    SD10 = treatment_palette[12]
+  )
+)
+  
   p <- pheatmap( mat = as.matrix(data.loc), 
             cluster_rows = dist.obs.tree,
             cluster_cols = FALSE, 
@@ -195,6 +205,7 @@ hier.clust <- function (data.loc, samples.sep.loc, rnames = FALSE) {
             annotation_legend = TRUE,
             annotation_col = annot_col,
             annotation_colors = annot_colors,
+            breaks = seq(-4, 4, length.out = 11)
   )
   
   print(p)
@@ -206,55 +217,55 @@ hier.clust <- function (data.loc, samples.sep.loc, rnames = FALSE) {
 #hier.clust(data, samples.sep)
 
 # Line plot
-line.plot <- function (gene) {
-  
-  d <- data %>% 
-    as.data.frame() %>% 
-    rownames_to_column(var = "Genes") %>% 
-    filter(Genes == gene) %>% 
-    pivot_longer(!Genes, names_to = "Samples", values_to = "Expression") %>% 
-    mutate(Samples = factor(Samples, levels = colnames(data))) %>% 
-    left_join(samples.sep %>% dplyr::select(-Expression), by = "Samples")
-
-  p1 <- d %>% 
-    filter(Location == "Outdoor") %>% 
-    ggplot(aes(x = Month, y = Expression, col = Month, group = Genes)) +
-    geom_jitter(size = 0.75, alpha = 0.5, width = 0.2) +
-    geom_smooth(col = "grey") +
-    ylim(0, round(max(d$Expression))) +
-    theme_bw() + 
-    theme(legend.position = "none",
-          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,
-                                     margin = margin(b = 12))) +
-    ggtitle(gene)
-  
-  p2 <- d %>% 
-    filter(Location == "Greenhouse") %>% 
-    mutate(Treatment = ifelse(S1 %in% c("CTW10", "SDW15"), S1, S2)) %>% 
-    mutate(Treatment = ifelse(S1 == "Stage0" | S2 == "LDD7", "LDW1", Treatment)) %>% 
-    mutate(Treatment = ifelse(S1 == "Stage1" | S1 == "Stage2" | S1 == "Stage3", "LDW2", Treatment)) %>% 
-    mutate(Treatment = ifelse(S1 == "Stage4" | S1 == "Stage5", "LDW3", Treatment)) %>% 
-    mutate(Treatment = ifelse(S1 == "LD" | S2 == "LD", "LDW4", Treatment)) %>% 
-    mutate(Treatment = factor(Treatment, levels = c("SDW15","CTW2","CTW8","CTW10",
-                                             "LDW1","LDW2","LDW3", "LDW4",
-                                             "SDW1","SDW2","SDW3","SDW10"))) %>% 
-    ggplot(aes(x = Treatment, y = Expression, col = Treatment)) +
-    geom_boxplot(outlier.colour = "white") +
-    geom_jitter(size = 0.75, alpha = 0.5, width = 0.2) +
-    ylim(0, round(max(d$Expression))) +
-    theme_bw() + 
-    theme(legend.position = "none", 
-          axis.title.y = element_blank(),
-          axis.text.y = element_blank(),
-          axis.ticks.y = element_blank(),
-          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)
-    ) +
-    ggtitle("")
-  
-  plot_grid(p1, p2, ncol = 2, rel_widths = c(50,50))
-  
-}
-
+# line.plot <- function (gene) {
+#   
+#   d <- data %>% 
+#     as.data.frame() %>% 
+#     rownames_to_column(var = "Genes") %>% 
+#     filter(Genes == gene) %>% 
+#     pivot_longer(!Genes, names_to = "Samples", values_to = "Expression") %>% 
+#     mutate(Samples = factor(Samples, levels = colnames(data))) %>% 
+#     left_join(samples.sep %>% dplyr::select(-Expression), by = "Samples")
+# 
+#   p1 <- d %>% 
+#     filter(Location == "Outdoor") %>% 
+#     ggplot(aes(x = Month, y = Expression, col = Month, group = Genes)) +
+#     geom_jitter(size = 0.75, alpha = 0.5, width = 0.2) +
+#     geom_smooth(col = "grey") +
+#     ylim(0, round(max(d$Expression))) +
+#     theme_bw() + 
+#     theme(legend.position = "none",
+#           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,
+#                                      margin = margin(b = 12))) +
+#     ggtitle(gene)
+#   
+#   p2 <- d %>% 
+#     filter(Location == "Greenhouse") %>% 
+#     mutate(Treatment = ifelse(S1 %in% c("CTW10", "SDW15"), S1, S2)) %>% 
+#     mutate(Treatment = ifelse(S1 == "Stage0" | S2 == "LDD7", "LDW1", Treatment)) %>% 
+#     mutate(Treatment = ifelse(S1 == "Stage1" | S1 == "Stage2" | S1 == "Stage3", "LDW2", Treatment)) %>% 
+#     mutate(Treatment = ifelse(S1 == "Stage4" | S1 == "Stage5", "LDW3", Treatment)) %>% 
+#     mutate(Treatment = ifelse(S1 == "LD" | S2 == "LD", "LDW4", Treatment)) %>% 
+#     mutate(Treatment = factor(Treatment, levels = c("SDW15","CTW2","CTW8","CTW10",
+#                                              "LDW1","LDW2","LDW3", "LDW4",
+#                                              "SDW1","SDW2","SDW3","SDW10"))) %>% 
+#     ggplot(aes(x = Treatment, y = Expression, col = Treatment)) +
+#     geom_boxplot(outlier.colour = "white") +
+#     geom_jitter(size = 0.75, alpha = 0.5, width = 0.2) +
+#     ylim(0, round(max(d$Expression))) +
+#     theme_bw() + 
+#     theme(legend.position = "none", 
+#           axis.title.y = element_blank(),
+#           axis.text.y = element_blank(),
+#           axis.ticks.y = element_blank(),
+#           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)
+#     ) +
+#     ggtitle("")
+#   
+#   plot_grid(p1, p2, ncol = 2, rel_widths = c(50,50))
+#   
+# }
+# 
 # Plot profiles of individual genes:
 # pdf(file = "AspenCoExpression_single_genes.pdf")
 # line.plot("Potra2n12c23929")
@@ -368,10 +379,6 @@ hist(MEs_R[upper.tri(MEs_R)], xlim = c(-1,1), breaks = seq(-1,1,0.1),
 Expression heatmaps of one representative profile for each module (i.e. eigengene).
 
 ```{r heatmap, warning=FALSE, message=FALSE}
-samples.sep_hm <- samples.sep
-samples.sep_hm$Location <- factor(samples.sep_hm$Location,
-                              levels = c("Outdoor", "Indoor"))
-
 data_hm <- data %>%
   as.data.frame() %>%
   rownames_to_column(var = "gene")
@@ -404,6 +411,10 @@ data.mod <- data_hm %>%
   column_to_rownames(var = "module") %>% 
   as.matrix
 
+samples.sep_hm <- samples.sep
+samples.sep_hm$Location <- factor(samples.sep_hm$Location,
+                              levels = c("Outdoor", "Indoor"))
+
 samples.sep_hm <- samples.sep_hm %>%
   unite("Treatment_Week", Treatment, Week, na.rm = TRUE, sep = "")
 
@@ -416,12 +427,15 @@ samples.sep_hm$`Month/Treatment` <- factor(
   samples.sep_hm$`Month/Treatment`,
   levels = c("SEP", "OCT", "DEC", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL",
              "AUG", "SD15", "CT2", "CT8", "CT10", "LD1", "LD2", "LD3", "LD4",
+             "SD1", "SD2", "SD3", "SD10"),
+  labels = c("SEP", "OCT", "DEC", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL",
+             "AUG", "SD15", "CT2", "CT8", "CT10", "BB1", "BB2", "BB3", "LD",
              "SD1", "SD2", "SD3", "SD10")
 )
 
 treatment_mapping <- c(
   "SEP", "OCT", "DEC", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL",
-  "AUG", "SD15", "CT2", "CT8", "CT10", "LD1", "LD2", "LD3", "LD4", "SD1", 
+  "AUG", "SD15", "CT2", "CT8", "CT10", "BB1", "BB2", "BB3", "LD", "SD1", 
   "SD2", "SD3", "SD10"
 )
 
@@ -429,6 +443,12 @@ samples.sep_hm$Treatment2 <- match(samples.sep_hm$`Month/Treatment`, treatment_m
 samples.sep_hm <- samples.sep_hm %>%
   arrange(desc(Location), Tissue) %>%
   arrange(Treatment2)
+samples.sep_hm <- samples.sep_hm %>% 
+  mutate(Age = ifelse(grepl("A", S2), "A", "Y")) %>% 
+  dplyr::select(!S2)
+
+samples.sep_hm$Age <- factor(samples.sep_hm$Age, levels = c("Y", "A"),
+                            labels = c("Juvenile", "Adult"))
 
 coln <- colnames(data.mod)
 rown <- samples.sep_hm$Samples
@@ -442,10 +462,9 @@ data.mod <- data.mod[, reorder_idx]
   dist.obs <- as.dist(1-cor(t(data.mod)))
   dist.obs.tree <- hclust(dist.obs, method = "ward.D")
 
-  samples.sep_hm$S2 <- factor(ifelse(samples.sep_hm$S2 %in% c("Y", "A1", "A2"),
-                            samples.sep_hm$S2, NA), levels = c("Y", "A1", "A2"))
+  
 
-  annot_col <- data.frame(Tissues   = samples.sep_hm$Tissue,
+  annot_col <- data.frame(Tissue   = samples.sep_hm$Tissue,
                           `Month/Treatment` = samples.sep_hm$`Month/Treatment`,
                           Location = samples.sep_hm$Location,
                           check.names = FALSE)
@@ -466,7 +485,7 @@ data.mod <- data.mod[, reorder_idx]
   names(location_map) <- vals
 
   annot_colors = list(Location = location_map,
-    Tissues   = c(Bud = "chocolate", Leaf = "darkgreen"),
+    Tissue   = c(Bud = "chocolate", Leaf = "darkgreen"),
      `Month/Treatment` = c(
         SEP = "#F3766E",
         OCT = "#D98F28",
@@ -483,10 +502,10 @@ data.mod <- data.mod[, reorder_idx]
         CT2 = "#2CBAA4",
         CT8 = "#07BADE",
         CT10 = "#499ED7",
-        LD1 = "#ADA334",
-        LD2 = "#65B345",
-        LD3 = "#2CB45D",
-        LD4 = "#346749",
+        BB1 = "#ADA334",
+        BB2 = "#65B345",
+        BB3 = "#2CB45D",
+        LD = "#346749",
         SD1 = "#9D86BE",
         SD2 = "#C574AF",
         SD3 = "#F067A6",
@@ -496,7 +515,7 @@ data.mod <- data.mod[, reorder_idx]
 
   )
 
-#pdf(file = "Figures/Transcriptomics_Torgeir/heatmap_modules.pdf")
+#pdf(file = "Figures/heatmap_modules.pdf")
 pheatmap(mat = as.matrix(data.mod),
             cluster_rows = dist.obs.tree,
             cluster_cols = FALSE,
@@ -620,16 +639,45 @@ for (col in names(mod_genes)) {
   mod <- rownames(data)[modules$colors == col]
   data.mod <- data[mod,]
   
-  idx.col <- colVars(as.matrix(data.mod)) > 0
-  data.mod <- data.mod[,idx.col]
+  # idx.col <- colVars(as.matrix(data.mod)) > 0
+  # data.mod <- data.mod[,idx.col]
+  
+  data.mod <- as.data.frame(data.mod)
+  
+  coln <- colnames(data.mod)
+  # rown_valid <- filter(samples.sep_hm, Samples%in% coln)
+  rown <- samples.sep_hm$Samples
+  reorder_idx <- match(rown, coln)
+  
+  data.mod <- data.mod[, reorder_idx]
+  
+  df <- data.mod %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Gene") %>% 
+  pivot_longer(!Gene, names_to = "Samples", values_to = "Expression") %>% 
+  mutate(Sample = factor(Samples, levels = colnames(data))) %>% 
+  left_join(samples.sep_hm %>% dplyr::select(-Expression), by = "Samples") %>% 
+    group_by(Gene, `Month/Treatment`, Location, Tissue, Treatment2, Age) %>%
+      summarize(mean = mean(Expression, na.rm = TRUE)) %>%
+      arrange(Treatment2)
+  
+  df_wide <-  df %>%
+    ungroup() %>% 
+      dplyr::select(!c(Location, Tissue, Treatment2)) %>% 
+  pivot_wider(
+    names_from = c(`Month/Treatment`, Age),  
+    values_from = mean,  
+    names_glue = "{`Month/Treatment`}_{Age}"  
+  ) %>% 
+   column_to_rownames("Gene")
   
   cat("Module ", col," (", nm, "/", no_mod, "):", " | ", "Genes: ", dim(data.mod)[1], 
       " | ", "Samples: ", dim(data.mod)[2], "\n", sep = "")
   
   # Hierarchical clustering of module
-  #pdf(file = paste0("heatmaps/AspenCoExpression_heatmaps_", col, ".pdf"))
-  hier.clust(data.mod, samples.sep[idx.col,])
-  #dev.off()
+  # pdf(file = paste0("heatmaps/heatmap_module_", col, ".pdf"))
+  hier.clust(df_wide, samples.sep_hm)
+  # dev.off()
   nm <- nm+1
 }
 
