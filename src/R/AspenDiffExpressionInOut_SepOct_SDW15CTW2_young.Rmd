@@ -281,7 +281,7 @@ if (compute) {
                                  geneIds = degs,
                                  universeGeneIds = goframeData$gene_id,
                                  ontology = "BP",
-                                 pvalueCutoff = 0.05,
+                                 pvalueCutoff = 1,
                                  conditional = FALSE,
                                  testDirection = "over")
   
@@ -293,6 +293,11 @@ if (compute) {
         if (nrow(t) > 0) {
           rownames(t) <- 1:nrow(t)
         
+          t$`P-value` <- as.numeric(t$`P-value`)
+          t$FDR <- p.adjust(t$`P-value`, method = "BH")
+          t <- t %>% 
+            filter(`P-value` < 0.05)
+          
           t$`P-value`<- format(t$`P-value`, digits=3, scientific=TRUE)
           
           for (i in 1:nrow(t)) {

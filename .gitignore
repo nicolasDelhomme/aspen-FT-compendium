@@ -51,3 +51,5 @@ reference/
 singularity
 singularity/
 .nextflow*
+GO_enrichment_FDR/
+*.zip

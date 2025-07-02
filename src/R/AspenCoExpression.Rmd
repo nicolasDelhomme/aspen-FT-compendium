@@ -724,7 +724,7 @@ if (compute) {
                                  geneIds = mod,
                                  universeGeneIds = goframeData$gene_id,
                                  ontology = "BP",
-                                 pvalueCutoff = 0.05,
+                                 pvalueCutoff = 1,
                                  conditional = FALSE,
                                  testDirection = "over")
   
@@ -735,8 +735,14 @@ if (compute) {
         colnames(t) <- c("GO id","P-value","x","n","GO term")
         if (nrow(t) > 0) {
           rownames(t) <- 1:nrow(t)
-        
+          
+           t$`P-value` <- as.numeric(t$`P-value`)
+          t$FDR <- p.adjust(t$`P-value`, method = "BH")
+          t <- t %>% 
+            filter(`P-value` < 0.05)
+          
           t$`P-value`<- format(t$`P-value`, digits=3, scientific=TRUE)
+         
           
           for (i in 1:nrow(t)) {
             go_id <- t$`GO id`[i] 
@@ -761,6 +767,20 @@ if (compute) {
 } else {
   load(paste0("RData/GO_modules_", ext, ".RData"))
 }
+
+library(openxlsx)
+
+# Create a new workbook
+wb <- createWorkbook()
+
+# Use lapply to add each list element as a sheet
+lapply(names(GO_modules), function(sheet_name) {
+  addWorksheet(wb, sheetName = sheet_name)
+  writeData(wb, sheet = sheet_name, x = GO_modules[[sheet_name]])
+})
+
+# Save the workbook
+saveWorkbook(wb, file = "GO_modules.xlsx", overwrite = TRUE)
 
 out = NULL
 nm <- 1
